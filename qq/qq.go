@@ -29,6 +29,11 @@ type QQ struct {
 	isVipCache *bool
 }
 
+type qqQualityCandidate struct {
+	prefix string
+	ext    string
+}
+
 func New(cookie string) *QQ { return &QQ{cookie: cookie} }
 
 var defaultQQ = New("")
@@ -60,6 +65,82 @@ func Parse(link string) (*model.Song, error)       { return defaultQQ.Parse(link
 
 // GetRecommendedPlaylists returns recommended playlists.
 func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultQQ.GetRecommendedPlaylists() }
+
+func normalizeQQQuality(raw string) string {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "master", "ai00":
+		return "master"
+	case "atmos51", "q001", "atmos_5_1":
+		return "atmos51"
+	case "atmos20", "q000", "atmos_2_0":
+		return "atmos20"
+	case "flac", "f000":
+		return "flac"
+	case "640", "640k", "o801":
+		return "640"
+	case "320", "320k", "m800":
+		return "320"
+	case "128", "128k", "m500":
+		return "128"
+	default:
+		return ""
+	}
+}
+
+func qqQualityCandidatesByVip(isVip bool) []qqQualityCandidate {
+	if isVip {
+		return []qqQualityCandidate{
+			{prefix: "AI00", ext: "flac"},
+			{prefix: "Q001", ext: "flac"},
+			{prefix: "Q000", ext: "flac"},
+			{prefix: "F000", ext: "flac"},
+			{prefix: "O801", ext: "ogg"},
+			{prefix: "M800", ext: "mp3"},
+			{prefix: "M500", ext: "mp3"},
+		}
+	}
+	return []qqQualityCandidate{
+		{prefix: "M800", ext: "mp3"},
+		{prefix: "M500", ext: "mp3"},
+	}
+}
+
+func pickQQQualityCandidates(all []qqQualityCandidate, quality string) []qqQualityCandidate {
+	q := normalizeQQQuality(quality)
+	if q == "" {
+		return all
+	}
+
+	prefixByQuality := map[string]string{
+		"master":  "AI00",
+		"atmos51": "Q001",
+		"atmos20": "Q000",
+		"flac":    "F000",
+		"640":     "O801",
+		"320":     "M800",
+		"128":     "M500",
+	}
+	wantPrefix := prefixByQuality[q]
+	if wantPrefix == "" {
+		return all
+	}
+
+	selected := make([]qqQualityCandidate, 0, len(all))
+	for _, cand := range all {
+		if cand.prefix == wantPrefix {
+			selected = append(selected, cand)
+			break
+		}
+	}
+	for _, cand := range all {
+		if cand.prefix == wantPrefix {
+			continue
+		}
+		selected = append(selected, cand)
+	}
+	return selected
+}
 
 func (q *QQ) IsVipAccount() (bool, error) {
 	if q.isVipCache != nil {
@@ -949,25 +1030,18 @@ func (q *QQ) GetDownloadURL(s *model.Song) (string, error) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	guid := fmt.Sprintf("%d", r.Int63n(9000000000)+1000000000)
 
-	// Request qualities from best to worst and use the first successful one.
-	var prefixes []string
-	var exts []string
-
 	isVip, _ := q.IsVipAccount()
-	if isVip {
-		prefixes = []string{"AI00", "Q001", "Q000", "F000", "O801", "M800", "M500"} // Master, Atmos5.1, Atmos2.0, FLAC, 640k, 320k, 128k
-		exts = []string{"flac", "flac", "flac", "flac", "ogg", "mp3", "mp3"}
-	} else {
-		prefixes = []string{"M800", "M500"} // Non-VIPs typically only reach 128kbps natively unless the track is free 320k
-		exts = []string{"mp3", "mp3"}
+	candidates := qqQualityCandidatesByVip(isVip)
+	if s.Extra != nil {
+		candidates = pickQQQualityCandidates(candidates, s.Extra["quality"])
 	}
 
 	var filenames []string
 	var songmids []string
 	var songtypes []int
 
-	for i := range prefixes {
-		filename := fmt.Sprintf("%s%s%s.%s", prefixes[i], songMID, songMID, exts[i])
+	for i := range candidates {
+		filename := fmt.Sprintf("%s%s%s.%s", candidates[i].prefix, songMID, songMID, candidates[i].ext)
 		filenames = append(filenames, filename)
 		songmids = append(songmids, songMID)
 		songtypes = append(songtypes, 0)
