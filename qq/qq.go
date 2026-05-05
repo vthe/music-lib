@@ -605,6 +605,12 @@ func (q *QQ) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) 
 		}
 	}
 
+	// 从发布日期中提取年份 (PublishDate格式例如: "2022-01-15" 或 "2022")
+	var year string
+	if publishDate := strings.TrimSpace(info.PublishDate); len(publishDate) >= 4 {
+		year = publishDate[:4]
+	}
+
 	const batchSize = 100
 	totalNum := 0
 	songs := make([]model.Song, 0)
@@ -714,6 +720,15 @@ func (q *QQ) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) 
 				cover = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", songInfo.Album.Mid)
 			}
 
+			extraMap := map[string]string{
+				"songmid":   songInfo.Mid,
+				"album_mid": songInfo.Album.Mid,
+				"album_id":  strconv.FormatInt(songInfo.Album.ID, 10),
+			}
+			if year != "" {
+				extraMap["year"] = year
+			}
+
 			songs = append(songs, model.Song{
 				Source:   "qq",
 				ID:       songInfo.Mid,
@@ -726,11 +741,7 @@ func (q *QQ) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) 
 				Bitrate:  bitrate,
 				Cover:    cover,
 				Link:     fmt.Sprintf("https://y.qq.com/n/ryqq/songDetail/%s", songInfo.Mid),
-				Extra: map[string]string{
-					"songmid":   songInfo.Mid,
-					"album_mid": songInfo.Album.Mid,
-					"album_id":  strconv.FormatInt(songInfo.Album.ID, 10),
-				},
+				Extra:    extraMap,
 			})
 		}
 
