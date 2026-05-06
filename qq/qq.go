@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/url"
 	"regexp"
@@ -65,6 +66,13 @@ func Parse(link string) (*model.Song, error)       { return defaultQQ.Parse(link
 
 // GetRecommendedPlaylists returns recommended playlists.
 func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultQQ.GetRecommendedPlaylists() }
+
+// GetUserCreatedPlaylists returns user's created playlists.
+// userID can be obtained from cookie "uin" or "wxuin" or passed as parameter.
+// If userID is empty, it will try to extract from cookie.
+func GetUserCreatedPlaylists(userID string) ([]model.Playlist, error) {
+	return defaultQQ.GetUserCreatedPlaylists(userID)
+}
 
 func normalizeQQQuality(raw string) string {
 	v := strings.ToLower(strings.TrimSpace(raw))
@@ -1192,6 +1200,174 @@ func (q *QQ) fetchSongDetail(songMID string) (*model.Song, error) {
 			"songmid": item.Mid,
 		},
 	}, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// extractFromCookie extracts a value from the cookie string by key.
+func extractFromCookie(cookie, key string) string {
+	key = key + "="
+	for _, part := range strings.Split(cookie, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, key) {
+			return part[len(key):]
+		}
+	}
+	return ""
+}
+
+// GetUserCreatedPlaylists returns the user's created playlists.
+// userID can be obtained from cookie "uin" or "wxuin" or passed as parameter.
+// If userID is empty, it will try to extract from cookie.
+func (q *QQ) GetUserCreatedPlaylists(userID string) ([]model.Playlist, error) {
+	log.Println("[QQ] GetUserCreatedPlaylists called with userID:", userID)
+	log.Println("[QQ] Cookie length:", len(q.cookie))
+	
+	// If userID is empty, try to extract from cookie
+	if userID == "" {
+		log.Println("[QQ] UserID empty, trying to extract from cookie...")
+		userID = extractFromCookie(q.cookie, "uin")
+		log.Println("[QQ] Extracted uin from cookie:", userID)
+		if userID == "" {
+			userID = extractFromCookie(q.cookie, "wxuin")
+			log.Println("[QQ] Extracted wxuin from cookie:", userID)
+		}
+		if userID == "" {
+			log.Println("[QQ] Error: No userID found in cookie!")
+			return nil, errors.New("user id is required and could not be found in cookie")
+		}
+	}
+
+	log.Println("[QQ] Using final userID:", userID)
+	
+	params := url.Values{}
+	params.Set("hostUin", userID)
+	params.Set("hostuin", userID)
+	params.Set("sin", "0")
+	params.Set("size", "200")
+	params.Set("uin", userID)
+	
+	// Get g_tk from cookie if available, default to 5381
+	gTk := extractFromCookie(q.cookie, "g_tk")
+	log.Println("[QQ] Extracted g_tk from cookie:", gTk)
+	if gTk == "" {
+		gTk = extractFromCookie(q.cookie, "g_tk_new_20200303")
+		log.Println("[QQ] Extracted g_tk_new_20200303 from cookie:", gTk)
+	}
+	if gTk == "" {
+		gTk = "5381"
+		log.Println("[QQ] Using default g_tk value")
+	}
+	
+	params.Set("g_tk", gTk)
+	params.Set("g_tk_new_20200303", gTk)
+	
+	// Add other parameters from the working API
+	params.Set("r", fmt.Sprintf("%d", time.Now().UnixNano()/1000000))
+	params.Set("_", fmt.Sprintf("%d", time.Now().UnixNano()/1000000))
+	params.Set("cv", "4747474")
+	params.Set("ct", "24")
+	params.Set("loginUin", userID)
+	params.Set("format", "json")
+	params.Set("inCharset", "utf-8")
+	params.Set("outCharset", "utf-8")
+	params.Set("notice", "0")
+	params.Set("platform", "yqq.json")
+	params.Set("needNewCode", "1")
+
+	apiURL := "https://c6.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss?" + params.Encode()
+	log.Println("[QQ] API Request URL:", apiURL)
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"),
+		utils.WithHeader("Referer", "https://y.qq.com/portal/profile.html"),
+		utils.WithHeader("Cookie", q.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		log.Println("[QQ] API Request Error:", err)
+		return nil, err
+	}
+	
+	log.Println("[QQ] API Response length:", len(body))
+	log.Println("[QQ] API Response body (first 500 chars):", string(body[:min(500, len(body))]))
+
+	var resp struct {
+		Code    int    `json:"code"`
+		Subcode int    `json:"subcode"`
+		Message string `json:"message"`
+		Data    struct {
+			EncryptUin string `json:"encrypt_uin"`
+			Hostname   string `json:"hostname"`
+			Total      int    `json:"totoal"`
+			Disslist   []struct {
+				DissName   string `json:"diss_name"`
+				DissCover  string `json:"diss_cover"`
+				SongCnt    int    `json:"song_cnt"`
+				ListenNum  int    `json:"listen_num"`
+				Dirid      int    `json:"dirid"`
+				Tid        int64  `json:"tid"`
+				DirShow    int    `json:"dir_show"`
+			} `json:"disslist"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		log.Println("[QQ] JSON Unmarshal Error:", err)
+		return nil, fmt.Errorf("qq user created playlists json parse error: %w", err)
+	}
+
+	log.Println("[QQ] API Response Code:", resp.Code)
+	log.Println("[QQ] API Response Subcode:", resp.Subcode)
+	log.Println("[QQ] API Response Message:", resp.Message)
+	log.Println("[QQ] API Total playlists:", resp.Data.Total)
+	log.Println("[QQ] API Hostname:", resp.Data.Hostname)
+
+	// Handle error codes
+	if resp.Code != 0 {
+		if resp.Code == 4000 {
+			log.Println("[QQ] Error: User playlists not public or user not found")
+			return nil, fmt.Errorf("user playlists not public or user not found")
+		}
+		return nil, fmt.Errorf("qq api error code: %d, message: %s", resp.Code, resp.Message)
+	}
+
+	log.Println("[QQ] Number of playlists found:", len(resp.Data.Disslist))
+
+	var playlists []model.Playlist
+	for _, item := range resp.Data.Disslist {
+		cover := item.DissCover
+		if cover != "" && strings.HasPrefix(cover, "http://") {
+			cover = strings.Replace(cover, "http://", "https://", 1)
+		}
+
+		// Use tid as playlist ID if available, otherwise use dirid
+		playlistID := ""
+		if item.Tid != 0 {
+			playlistID = fmt.Sprintf("%d", item.Tid)
+		} else {
+			playlistID = fmt.Sprintf("%d", item.Dirid)
+		}
+
+		playlists = append(playlists, model.Playlist{
+			Source:      "qq",
+			ID:          playlistID,
+			Name:        item.DissName,
+			Cover:       cover,
+			TrackCount:  item.SongCnt,
+			PlayCount:   item.ListenNum,
+			Creator:     resp.Data.Hostname,
+			Description: "",
+			Link:        fmt.Sprintf("https://y.qq.com/n/ryqq/playlist/%s", playlistID),
+		})
+	}
+
+	return playlists, nil
 }
 
 // GetLyrics fetches lyrics.
